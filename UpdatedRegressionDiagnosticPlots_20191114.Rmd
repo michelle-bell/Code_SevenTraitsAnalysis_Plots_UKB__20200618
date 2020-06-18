@@ -1,0 +1,236 @@
+---
+title: "UpdatedRegression4SNPsAndBodyComp_20191114"
+author: "M. Newell"
+date: "11/1/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+Create final dataset and split into male and female dataset
+```{r}
+#load main dataset
+load('/rsgrps/yann/michellenewell/UKB/Full_dataset/Main_dataset_UKB_n487320_derived variables_20191014_mdat.rda')
+dim(mdat)
+```
+Merge SNPs into main file
+```{r}
+#______________________Merge__________________________________________________________
+#Combine 4 SNPs with phenotype data
+setwd('/rsgrps/yann/michellenewell/UKB/PheWAS/7Traits_4SNPs_20190909/xData')
+snps <- read.csv('TraitsOfInterest_SNPs_7Cardio_n478320_updated5snps_20191108.csv', header = T)
+
+all.equal(snps$userId, mdat$f.eid)
+#[1] TRUE
+
+final <- merge(mdat, snps[, c("userId", "rs13389219_T", "snp7_130438531_C", "rs5792311_C", "rs8126001_T", "rs998584_A")], by.x = "f.eid", by.y = "userId")
+dim(final)
+#[1] 487320   4120
+#rs13389219_T and rs998584_A already in data set, merged column from snps dataset ends in '.y'
+```
+```{r}
+library(tidyverse)
+```
+Create new variables
+```{r}
+#LegFat %, average of left and right
+final2 <- final %>%
+  mutate(legFatPerc = ((final$f.23115.0.0 + final$f.23111.0.0)/2))
+
+summary(final2$legFatPerc)
+#Min. 1st Qu.  Median    Mean 3rd Qu.    Max.    NA's 
+#1.45   22.25   33.15   31.95   41.00   67.25    8808 
+
+final2$CRP_excl10 <- ifelse((final2$f.30710.0.0 < 10), final2$f.30710.0.0, NA)
+summary(final2$CRP_excl10)
+```
+
+
+
+
+
+
+
+Create ALT with exclusions for liver disease, certain medications, and high alcohol use
+
+Liver disease
+```{r}
+#Loop to calculate people with liver illness
+#_____________________________Liver disease codes_________________________________________________________________________
+X <- c("1155", "1156", "1157", "1158", "1159", "1160", "1161", "1162", "1163", "1164", "1165",
+     "1339", "1340", "1047", "1048", "1049", "1050", "1051", "1052", "1053", "1054", "1055", 
+     "1056", "1057", "1058", "1578", "1579", "1580", "1581", "1582", "1604", "1439", "1506") 
+
+l1 <- rep(0, nrow(final2))
+g1 <- c()
+
+for(i in c(2783:2811)){
+  g1 <- ifelse(final2[, i]%in%X, 1, 0)
+  l1 <- g1 + l1
+  print(i)
+}
+
+table(l1)
+
+final2$hepatic_MedConditions <- ifelse(l1 >= 1, 1, 0)
+table(final2$hepatic_MedConditions)
+```
+
+
+People on liver medications
+```{r}
+## amiodarone,prednisolone,methylprednisolone 
+Y <-c("1140888502", "1140868364", "1140874976") 
+
+
+###### loop for liver meds use variable
+l2 <- rep(0, nrow(final2))
+g2 <- c()
+
+for(i in c(2055:2102)){
+  g2 <- ifelse(final2[, i]%in%Y, 1, 0)
+  l2 <- g2 + l2
+  print(i)
+}
+
+table(l2) 
+
+final2$hepatic_exclMeds <- ifelse(l2 >= 1, 1, 0)
+table(final2$hepatic_exclMeds)
+
+```
+Alcohol Use
+```{r}
+#_______________________________Alcohol use____________________________________________________________________
+#### take average for each across all three instances
+
+final2$drinks_per_wk <- NA
+
+final2$drinks_per_wk <- apply(final2[ , c('f.1568.0.0', 'f.1578.0.0', 'f.1588.0.0', 'f.1598.0.0', 'f.5364.0.0')], 1, sum, na.rm=T)
+final2$drinks_per_wk <- ifelse((final2$drinks_per_wk < 0), NA, final2$drinks_per_wk)
+```
+
+
+Create ALT excluding those with liver disease, liver meds, and > 14 alcoholic drinks per day
+```{r}
+final2$ALT_MultExcl <- NA
+final2$ALT_MultExcl <- ifelse((final2$hepatic_MedConditions == 1 | final2$hepatic_exclMeds == 1 | (final2$drinks_per_wk > 14)), NA, final2$f.30620.0.0)
+summary(final2$ALT_MultExcl)
+
+```
+Stratify by Sex for final datasets
+```{r}
+female <- final2 %>%
+  filter(f.31.0.0 == 0)
+
+male <- final2 %>%
+  filter(f.31.0.0 == 1)
+
+```
+
+Then, inverse normalize all body compositions and ALT of interest for female and male
+```{r}
+#INVERSE NORMALIZATION
+my.invnorm = function(x)
+{
+  res = rank(x)
+  res = qnorm(res/(length(res)+0.5))
+  return(res)
+}
+
+#female, InvNorm BMI
+female$InvNorm_BMI[!is.na(female$f.21001.0.0)] <- my.invnorm(female$f.21001.0.0[!is.na(female$f.21001.0.0)])
+#female, InvNorm WC
+female$InvNorm_WC[!is.na(female$f.48.0.0)] <- my.invnorm(female$f.48.0.0[!is.na(female$f.48.0.0)])
+#female, InvNorm HC
+female$InvNorm_HC[!is.na(female$f.49.0.0)] <- my.invnorm(female$f.49.0.0[!is.na(female$f.49.0.0)])
+#female, InvNorm legfat
+female$InvNorm_LegFatPerc[!is.na(female$legFatPerc)] <- my.invnorm(female$legFatPerc[!is.na(female$legFatPerc)])
+#female, InvNorm bodyFat
+female$InvNorm_BodyFatPerc[!is.na(female$f.23099.0.0)] <- my.invnorm(female$f.23099.0.0[!is.na(female$f.23099.0.0)])
+#female, InvNorm ALT
+female$InvNorm_ALT_MultExcl[!is.na(female$ALT_MultExcl)] <- my.invnorm(female$ALT_MultExcl[!is.na(female$ALT_MultExcl)])
+#male, InvNorm BMI
+male$InvNorm_BMI[!is.na(male$f.21001.0.0)] <- my.invnorm(male$f.21001.0.0[!is.na(male$f.21001.0.0)])
+#male, InvNorm WC
+male$InvNorm_WC[!is.na(male$f.48.0.0)] <- my.invnorm(male$f.48.0.0[!is.na(male$f.48.0.0)])
+#male, InvNorm HC
+male$InvNorm_HC[!is.na(male$f.49.0.0)] <- my.invnorm(male$f.49.0.0[!is.na(male$f.49.0.0)])
+#male, InvNorm legfat
+male$InvNorm_LegFatPerc[!is.na(male$legFatPerc)] <- my.invnorm(male$legFatPerc[!is.na(male$legFatPerc)])
+#male, InvNorm bodyFat
+male$InvNorm_BodyFatPerc[!is.na(male$f.23099.0.0)] <- my.invnorm(male$f.23099.0.0[!is.na(male$f.23099.0.0)])
+#male, InvNorm ALT
+male$InvNorm_ALT_MultExcl[!is.na(male$ALT_MultExcl)] <- my.invnorm(male$ALT_MultExcl[!is.na(male$ALT_MultExcl)])
+#female, InvNorm CRP
+female$InvNorm_CRP[!is.na(female$CRP_excl10)] <- my.invnorm(female$CRP_excl10[!is.na(female$CRP_excl10)])
+#male, InvNorm CRP
+male$InvNorm_CRP[!is.na(male$CRP_excl10)] <- my.invnorm(male$CRP_excl10[!is.na(male$CRP_excl10)])
+```
+
+Diagnostic plots
+```{r}
+#Female, BMI, VEGFA
+reg1 <- lm(InvNorm_BMI ~ rs998584_A.y + Age_v0 + Age_sq + as.factor(female$f.54.0.0) + as.factor(female$chip) + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data = female)
+summary(reg1)
+plot(reg1)
+```
+```{r}
+#Female, GRB14, WC
+reg2 <- lm(InvNorm_WC ~ rs13389219_T.y + Age_v0 + Age_sq + as.factor(female$f.54.0.0) + as.factor(female$chip) + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data = female)
+summary(reg2)
+plot(reg2)
+```
+```{r}
+#Male, GRB14, HC
+reg3 <- lm(InvNorm_HC ~ rs13389219_T.y + Age_v0 + Age_sq + as.factor(male$f.54.0.0) + as.factor(male$chip) + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data = male)
+summary(reg3)
+plot(reg3)
+```
+```{r}
+#Male, RGS19, Body Fat
+reg4 <-lm(InvNorm_BodyFatPerc ~ rs8126001_T + Age_v0 + Age_sq + as.factor(male$f.54.0.0) + as.factor(male$chip) + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data = male)
+summary(reg4)
+plot(reg4)
+```
+```{r}
+#male, KLF14, ALT
+reg5 <- lm(InvNorm_ALT_MultExcl ~ snp7_130438531_C + Age_v0 + Age_sq + as.factor(male$f.54.0.0) + as.factor(male$chip) + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data = male)
+summary(reg5)
+plot(reg5)
+```
+```{r}
+#Female, KLF14, legfat
+reg6 <- lm(InvNorm_LegFatPerc ~ snp7_130438531_C + Age_v0 + Age_sq + as.factor(female$f.54.0.0) + as.factor(female$chip) + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data = female)
+summary(reg6)
+plot(reg6)
+```
+
+```{r}
+#Female, CRP, VEGFA
+reg7 <- lm(InvNorm_CRP ~ rs998584_A.y + Age_v0 + Age_sq + as.factor(female$f.54.0.0) + as.factor(female$chip) + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data = female)
+summary(reg7)
+plot(reg7)
+```
+```{r}
+#Male, CRP, Body Fat
+reg8 <-lm(InvNorm_CRP ~ rs8126001_T + Age_v0 + Age_sq + as.factor(male$f.54.0.0) + as.factor(male$chip) + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data = male)
+summary(reg8)
+plot(reg8)
+```
+
+
+j = c("InvNorm_BMI", "InvNorm_WC", "InvNorm_HC", "InvNorm_LegFatPerc", "InvNorm_BodyFatPerc", "InvNorm_ALT_MultExcl")
+k = c("rs13389219_T.y", "snp7_130438531_C", "rs8126001_T", "rs998584_A.y")
+covariates_f <- "Age_v0 + Age_sq + as.factor(female$f.54.0.0) + as.factor(female$chip) + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10"
+covariates_m <- "Age_v0 + Age_sq + as.factor(male$f.54.0.0) + as.factor(male$chip) + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10"
+
+
+
+
+
+

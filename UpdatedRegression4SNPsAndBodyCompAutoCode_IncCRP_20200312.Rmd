@@ -1,0 +1,592 @@
+---
+title: "Trait Analysis for Body Comp and biomarkers by SNPs related to 7 cardiometabolic health, WHITES ONLY"
+author: "M. Newell"
+date: "3/16/2020"
+output: html_document
+---
+6/17/2020 Add drinks per week as exclusion focus in ALT, less strict than units per week and lose less people - assess if comparable
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+```
+
+Create final dataset and split into male and female dataset
+```{r}
+#load main dataset
+load('/rsgrps/yann/michellenewell/UKB/Full_dataset/Main_dataset_UKB_n487320_derived variables_20191014_mdat.rda')
+dim(mdat)
+```
+Exclude withdrawals and non-whites
+```{r}
+#Exclude people no longer participating
+table(mdat$f.eid < 0)
+excl <- read.table('/rsgrps/yann/UKBIOBANK/Download/PeopleToExclude/w15678_20200204.csv', header=F)
+sum(mdat$f.eid %in% excl$V1) 
+
+#hetero outliers, none in dataset
+table(mdat$het.missing.outliers)
+
+#Genetic exclusions, White only
+sum(mdat$GenExcl3 == 1)
+
+#Subset with all exclusions
+mdat_excl <- mdat %>%
+  filter(!(f.eid %in% excl$V1), !(GenExcl3 == 1))
+dim(mdat_excl)
+
+#Check
+sum(!(mdat_excl$GenExcl3 == 1) & !(mdat_excl$f.eid %in% excl$V1)) 
+```
+
+
+Merge SNPs into main file, will only merge whit only participants
+```{r}
+#______________________Merge__________________________________________________________
+#Combine 4 SNPs with phenotype data
+setwd('/rsgrps/yann/michellenewell/UKB/PheWAS/7Traits_4SNPs_20190909/xData')
+snps <- read.csv('TraitsOfInterest_SNPs_7Cardio_n478320_updated5snps_20191108.csv', header = T)
+
+all.equal(snps$userId, mdat$f.eid)
+#[1] TRUE
+
+mdat2 <- merge(mdat_excl, snps[, c("userId", "rs13389219_T", "snp7_130438531_C", "rs5792311_C", "rs8126001_T", "rs998584_A")], by.x = "f.eid", by.y = "userId")
+dim(mdat2)
+
+#rs13389219_T and rs998584_A already in data set, merged column from snps dataset ends in '.y' - I will use this variable
+```
+```{r}
+rm(mdat)
+rm(mdat_excl)
+rm(snps)
+rm(excl)
+```
+SNP columns and duplicates
+```{r}
+colnames(mdat2)[4117:4121]
+all.equal(mdat2$rs13389219_T.x, mdat2$rs13389219_T.y)
+all.equal(mdat2$rs998584_A.x, mdat2$rs998584_A.y)
+```
+
+
+
+#Create variables (ALT, CRP, LEGFAT %), inverse normalize all vars of interest,  and stratify by Sex
+
+Create ALT with exclusions for liver disease, certain medications, and high alcohol use
+
+Exclude liver disease/problems
+1. UKB, Non-cancer field(20002)
+1155 hepatitis
+1156 infective/viral hepatitis
+1157 non-infective hepatitis 
+1158 liver failure/cirrhosis 
+1159 bile duct disease
+1160 bile duct obstruction/ascending cholangitis 
+1161 gall bladder disease
+1162 cholelithiasis/gall stones
+1163 cholecystitis 
+1164 pancreatic disease
+1165 pancreatitis 
+1339 sickle cell disease 
+1340 thalassaemia 
+1439 hiv/aids 
+1506 p-biliary-cirrhosis 
+1578 hepatitis a 1579 hepatitis b 1580 hepatitis c 1581 hepatitis d 1582 hepatitis e 
+1604 alcoholic liver disease / alcoholic cirrhosis
+
+2. UKB, Cancer field(20001)
+1047 lymphoma
+1048 leukaemia
+1050 multiple myeloma
+1051 myelofibrosis or myelodysplasia 
+1052 hodgkins lymphoma / hodgkins disease
+1053 non-hodgkins lymphoma
+1055 chronic lymphocytic Yes 
+1056 chronic myeloid 
+1058 other haematological malignancy 
+1024	liver/hepatocellular cancer
+1025	gallbladder/bile duct cancer
+```{r}
+#Loops to calculate people with liver illness
+
+# 1. Liver disease codes, non-cancer
+X1 <- c("1155", "1156", "1157", "1158", "1159", "1160", "1161", "1162", "1163", "1164", "1165",
+     "1339", "1340", "1439", "1506", "1578", "1579", "1580", "1581", "1582", "1604") 
+
+l1 <- rep(0, nrow(mdat2))
+g1 <- c()
+
+grep("f.20002.0.", names(mdat2)) # 2783-2811
+```
+```{r}
+for(i in c(2783:2811)){
+  g1 <- ifelse(mdat2[, i] %in% X1, 1, 0)
+  l1 <- g1 + l1
+  print(i)
+}
+
+table(l1)
+
+mdat2$HepDis1 <- ifelse(l1 >= 1, 1, 0)
+table(mdat2$HepDis1)
+```
+```{r}
+# 2. Cancer codes
+X2 <- c("1047", "1048", "1050", "1051", "1052", "1053", "1055", "1056", "1058", "1024", "1025") 
+
+l2 <- rep(0, nrow(mdat2))
+g2 <- c()
+
+grep("f.20001.0.", names(mdat2))
+#[1] 2765 2766 2767 2768 2769 2770
+```
+```{r}
+for(i in c(2765:2770)){
+  g2 <- ifelse(mdat2[, i] %in% X2, 1, 0)
+  l2 <- g2 + l2
+  print(i)
+}
+
+table(l2)
+
+mdat2$HepDis2 <- ifelse(l2 >= 1, 1, 0)
+table(mdat2$HepDis2)
+```
+```{r}
+
+# 3. Taking medication for liver disease
+# amiodarone,prednisolone,methylprednisolone 
+Y <-c("1140888502", "1140868364", "1140874976") 
+
+l3 <- rep(0, nrow(mdat2))
+g3 <- c()
+
+grep("f.20003.0.", names(mdat2))#2055:2102
+```
+```{r}
+for(i in c(2055:2102)){
+  g3 <- ifelse(mdat2[, i] %in% Y, 1, 0)
+  l3 <- g3 + l3
+  print(i)
+}
+table(l3)
+mdat2$HepMeds <- ifelse(l3 >= 1, 1, 0)
+table(mdat2$HepMeds)
+```
+```{r}
+rm(l1)
+rm(l2)
+rm(l3)
+rm(g1)
+rm(g2)
+rm(g3)
+rm(X1)
+rm(X2)
+rm(Y)
+```
+Alcohol consumption - units/wk, drinks/wk
+```{r}
+#Units per week, based on number and types of drinks
+#wine
+mdat2$WineAvgUnitWk <- NA
+mdat2$WineAvgUnitWk <- ifelse((mdat2$f.1568.0.0 < 0 | mdat2$f.1578.0.0 < 0), NA, 
+                         (mdat2$f.1568.0.0*2 + mdat2$f.1578.0.0*2))
+#beer/cider
+mdat2$BeerAvgUnitWk <- NA
+mdat2$BeerAvgUnitWk <- ifelse(mdat2$f.1588.0.0 < 0, NA, mdat2$f.1588.0.0*2.5)
+#spirits
+mdat2$SpiritsAvgUnitWk <- NA
+mdat2$SpiritsAvgUnitWk <- ifelse(mdat2$f.1598.0.0 < 0, NA, mdat2$f.1598.0.0)
+
+summary(mdat2$WineAvgUnitWk)
+summary(mdat2$BeerAvgUnitWk)
+summary(mdat2$SpiritsAvgUnitWk)
+
+
+#Never = 6, Spec Occasion Only = 5, 1-3/mo = 4
+mdat2$AlcUnitsRaw <- NA
+mdat2$AlcUnitsRaw <- ifelse ((mdat2$f.1558.0.0 == 6 | mdat2$f.1558.0.0 == 5 | mdat2$f.1558.0.0 == 4), 0, 
+                              (mdat2$WineAvgUnitWk + mdat2$BeerAvgUnitWk + mdat2$SpiritsAvgUnitWk))
+summary(mdat2$AlcUnitsRaw)
+
+#Exclude > 5 SD, males > 104, females > 89
+cutoff <- mean(mdat2$AlcUnitsRaw, na.rm = T) + 5*sd(mdat2$AlcUnitsRaw, na.rm = T)
+cutoff
+
+mdat2$AlcUnitsPerWk <- ifelse(((mdat2$Sex == 0 & mdat2$AlcUnitsRaw > 89) |
+                               (mdat2$Sex == 1 & mdat2$AlcUnitsRaw > 102) |
+                                 (mdat2$AlcUnitsRaw > cutoff)), NA, mdat2$AlcUnitsRaw)
+summary(mdat2$AlcUnitsPerWk)
+```
+```{r}
+#________________________________________________________________________________________________________________________________________________________
+#Drinks per 
+mdat2$drinks_per_wk <- NA
+mdat2$drinks_per_wk <- apply(mdat2[ , c('f.1568.0.0', 'f.1578.0.0', 'f.1588.0.0', 'f.1598.0.0', 'f.1608.0.0','f.5364.0.0')], 1, sum, na.rm = T)
+sum(mdat2$drinks_per_wk > 140, na.rm = T)
+mdat2$drinks_per_wk <- ifelse((mdat2$drinks_per_wk < 0 | mdat2$drinks_per_wk > 140), NA, mdat2$drinks_per_wk)
+summary(mdat2$drinks_per_wk)
+hist(mdat2$drinks_per_wk, xlim = range(0, 100))
+#exclude extreme/impossible drinks per day (20)
+
+
+
+```
+CDC guidelines: https://www.cdc.gov/alcohol/faqs.htm#heavyDrinking ; 15 drinks/wk for men, 8 drinks/wk women
+https://www.nhs.uk/conditions/alcohol-misuse/, https://www.nhs.uk/live-well/alcohol-support/calculating-alcohol-units/ ; 14 units per week male and female
+https://iard.org/science-resources/detail/drinking-guidelines-general-population/ 112g/wk for women, 210g/wk men
+
+1. Genome-Wide Association Study Identifies Variants Associated With Histologic Features of Nonalcoholic Fatty Liver Disease (Chalasani, 2010): 
+Clinical evidence of alcoholic liver disease: regular and excessive use of alcohol within the 2 years before interview defined as alcohol intake >14 drinks/wk in a man or >7 drinks/wk in a woman. Approximately 10 g of alcohol equals one “drink” unit. One unit equals 1 ounce of distilled spirits, one 12-oz beer, or one 4-oz glass of wine.
+Dataset with additional derived variables
+2. Agarwal S, Fulgoni VL 3rd, Lieberman HR. Assessing alcohol intake & its dose-dependent effects on liver enzymes by 24-h recall and questionnaire using NHANES 2001-2010 data. Nutr J. 2016;15(1):62. Published 2016 Jun 22. doi:10.1186/s12937-016-0180-y
+3. Large-scale genome-wide association studies in east Asians identify new genetic loci influencing metabolic traits - Only excluded based on medication
+4. Xin Yuan, Dawn Waterworth, John R.B. Perry, Noha Lim, Kijoung Song, John C. Chambers, Weihua Zhang, Peter Vollenweider, Heide Stirnadel, Toby Johnson, Sven Bergmann, Noam D. Beckmann, Yun Li, Luigi Ferrucci, David Melzer, Dena Hernandez, Andrew Singleton, James Scott, Paul Elliott, Gerard Waeber, Lon Cardon, Timothy M. Frayling, Jaspal S. Kooner, Vincent Mooser,
+Population-Based Genome-wide Association Studies Reveal Six Loci Influencing Plasma Levels of Liver Enzymes,
+The American Journal of Human Genetics - Added alcohol as covariate if significant
+```{r}
+#LegFat %, average of left and right
+ final <- mdat2 %>%
+  mutate(legFatPerc = (mdat2$f.23115.0.0 + mdat2$f.23111.0.0)/2,
+         CRP_excl10 = ifelse(mdat2$f.30710.0.0 < 10, mdat2$f.30710.0.0, NA),
+         ALT_MultExcl = ifelse((mdat2$HepDis1 == 1 | mdat2$HepDis2 == 1 |mdat2$HepMeds == 1 |
+                                mdat2$AlcUnitsPerWk > 14), NA, mdat2$f.30620.0.0),
+         ALT_Excl_DrinksWk = ifelse((mdat2$HepDis1 == 1 | mdat2$HepDis2 == 1 |mdat2$HepMeds == 1 |
+                                (Sex == 0 & drinks_per_wk > 7) |
+                               (Sex == 1 & drinks_per_wk > 14)), NA, mdat2$f.30620.0.0),
+         ALT_Excl_NoAlc = ifelse((mdat2$HepDis1 == 1 | mdat2$HepDis2 == 1 |mdat2$HepMeds == 1),
+                                 NA, mdat2$f.30620.0.0))
+
+summary(final$legFatPerc)
+summary(final$CRP_excl10)
+summary(final$f.30710.0.0)
+summary(final$ALT_MultExcl)
+summary(final$ALT_Excl_DrinksWk)
+summary(final$ALT_Excl_NoAlc)
+```
+
+
+Stratify by Sex for final datasets
+```{r}
+female <- final %>%
+  filter(Sex == 0)
+dim(female)
+
+male <- final %>%
+  filter(Sex == 1)
+dim(male)
+rm(final)
+```
+```{r}
+rm(mdat2)
+```
+
+
+Then, inverse normalize all body compositions and ALT of interest for female and male
+```{r}
+#INVERSE NORMALIZATION
+my.invnorm = function(x)
+{
+  res = rank(x)
+  res = qnorm(res/(length(res)+0.5))
+  return(res)
+}
+
+#female, InvNorm BMI
+female$InvNorm_BMI[!is.na(female$f.21001.0.0)] <- my.invnorm(female$f.21001.0.0[!is.na(female$f.21001.0.0)])
+#female, InvNorm WC
+female$InvNorm_WC[!is.na(female$f.48.0.0)] <- my.invnorm(female$f.48.0.0[!is.na(female$f.48.0.0)])
+#female, InvNorm HC
+female$InvNorm_HC[!is.na(female$f.49.0.0)] <- my.invnorm(female$f.49.0.0[!is.na(female$f.49.0.0)])
+#female, InvNorm legfat
+female$InvNorm_LegFatPerc[!is.na(female$legFatPerc)] <- my.invnorm(female$legFatPerc[!is.na(female$legFatPerc)])
+#female, InvNorm bodyFat
+female$InvNorm_BodyFatPerc[!is.na(female$f.23099.0.0)] <- my.invnorm(female$f.23099.0.0[!is.na(female$f.23099.0.0)])
+#female, InvNorm ALT, alcohol units per week
+female$InvNorm_ALT_MultExcl[!is.na(female$ALT_MultExcl)] <- my.invnorm(female$ALT_MultExcl[!is.na(female$ALT_MultExcl)])
+#female, InvNorm ALT, drinks per week
+female$InvNorm_ALT_ExclDrinkWk[!is.na(female$ALT_Excl_DrinksWk)] <- my.invnorm(female$ALT_Excl_DrinksWk[!is.na(female$ALT_Excl_DrinksWk)])
+#female, InvNorm ALT, include all alcohol consumption
+female$InvNorm_ALT_NoAlc[!is.na(female$ALT_Excl_NoAlc)] <- my.invnorm(female$ALT_Excl_NoAlc[!is.na(female$ALT_Excl_NoAlc)])
+#female, InvNorm CRP
+female$InvNorm_CRP[!is.na(female$CRP_excl10)] <- my.invnorm(female$CRP_excl10[!is.na(female$CRP_excl10)])
+
+
+#male, InvNorm BMI
+male$InvNorm_BMI[!is.na(male$f.21001.0.0)] <- my.invnorm(male$f.21001.0.0[!is.na(male$f.21001.0.0)])
+#male, InvNorm WC
+male$InvNorm_WC[!is.na(male$f.48.0.0)] <- my.invnorm(male$f.48.0.0[!is.na(male$f.48.0.0)])
+#male, InvNorm HC
+male$InvNorm_HC[!is.na(male$f.49.0.0)] <- my.invnorm(male$f.49.0.0[!is.na(male$f.49.0.0)])
+#male, InvNorm legfat
+male$InvNorm_LegFatPerc[!is.na(male$legFatPerc)] <- my.invnorm(male$legFatPerc[!is.na(male$legFatPerc)])
+#male, InvNorm bodyFat
+male$InvNorm_BodyFatPerc[!is.na(male$f.23099.0.0)] <- my.invnorm(male$f.23099.0.0[!is.na(male$f.23099.0.0)])
+#male, InvNorm ALT
+male$InvNorm_ALT_MultExcl[!is.na(male$ALT_MultExcl)] <- my.invnorm(male$ALT_MultExcl[!is.na(male$ALT_MultExcl)])
+#male, InvNorm ALT, drinks per week
+male$InvNorm_ALT_ExclDrinkWk[!is.na(male$ALT_Excl_DrinksWk)] <- my.invnorm(male$ALT_Excl_DrinksWk[!is.na(male$ALT_Excl_DrinksWk)])
+#male, InvNorm ALT, include all alcohol consumption
+male$InvNorm_ALT_NoAlc[!is.na(male$ALT_Excl_NoAlc)] <- my.invnorm(male$ALT_Excl_NoAlc[!is.na(male$ALT_Excl_NoAlc)])
+#male, InvNorm CRP
+male$InvNorm_CRP[!is.na(male$CRP_excl10)] <- my.invnorm(male$CRP_excl10[!is.na(male$CRP_excl10)])
+```
+Observe distributions
+```{r}
+#Histgrams, raw -  female
+female %>% 
+  select(f.21001.0.0, f.48.0.0, f.49.0.0, legFatPerc, f.23099.0.0, ALT_MultExcl, ALT_Excl_NoAlc, ALT_Excl_DrinksWk, CRP_excl10) %>%
+  gather(key = BodyComp, value = Measure) %>% 
+  ggplot(aes(x = Measure)) + 
+  geom_histogram(breaks = seq(0, 160, by = 2)) + 
+  facet_wrap(~BodyComp)
+#Histgrams, raw -  male
+male %>% 
+  select(f.21001.0.0, f.48.0.0, f.49.0.0, legFatPerc, f.23099.0.0, ALT_MultExcl, ALT_Excl_NoAlc, ALT_Excl_DrinksWk,  CRP_excl10) %>%
+  gather(key = BodyComp, value = Measure) %>% 
+  ggplot(aes(x = Measure)) + 
+  geom_histogram(breaks = seq(0, 160, by = 2)) + 
+  facet_wrap(~BodyComp)
+#Histograms, InvNorm - female
+female %>% 
+  select(InvNorm_BMI, InvNorm_WC, InvNorm_HC, InvNorm_LegFatPerc, InvNorm_BodyFatPerc, InvNorm_ALT_MultExcl, InvNorm_ALT_NoAlc, InvNorm_ALT_ExclDrinkWk,  InvNorm_CRP) %>%
+  gather(key = BodyComp, value = Measure) %>% 
+  ggplot(aes(x = Measure)) + 
+  geom_histogram() + 
+  facet_wrap(~BodyComp)
+#Histograms, InvNorm - male
+male %>% 
+  select(InvNorm_BMI, InvNorm_WC, InvNorm_HC, InvNorm_LegFatPerc, InvNorm_BodyFatPerc, InvNorm_ALT_MultExcl, InvNorm_ALT_NoAlc, InvNorm_ALT_ExclDrinkWk, InvNorm_CRP) %>%
+  gather(key = BodyComp, value = Measure) %>% 
+  ggplot(aes(x = Measure)) + 
+  geom_histogram() + 
+  facet_wrap(~BodyComp)
+
+```
+
+#Run regressions
+```{r}
+j = c("InvNorm_BMI", "InvNorm_WC", "InvNorm_HC", "InvNorm_LegFatPerc", "InvNorm_BodyFatPerc", "InvNorm_ALT_MultExcl", "InvNorm_CRP", "InvNorm_ALT_NoAlc", "InvNorm_ALT_ExclDrinkWk")
+k = c("rs13389219_T.y", "snp7_130438531_C", "rs8126001_T", "rs998584_A.y")
+covariates_f <- "Age_v0 + Age_sq + as.factor(female$f.54.0.0) + as.factor(female$chip) + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10"
+covariates_m <- "Age_v0 + Age_sq + as.factor(male$f.54.0.0) + as.factor(male$chip) + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10"
+params <- expand.grid(j, k, stringsAsFactors = FALSE)
+params
+```
+Females
+```{r}
+one_lm_female <- function(j, k) {  
+  
+  form <- formula(paste0(j, "~ ", k, " + ", covariates_f))
+  result <- lm(form, data = female)
+  
+  list(
+    bodyComp = j,
+    SNP = k,
+    beta = coef(summary(result))[2,1],
+    std_err  = coef(summary(result))[2,2],
+    z_value  = coef(summary(result))[2,3],
+    p_value  = coef(summary(result))[2,4],
+    pct_2.5  = confint(result)[2,1],
+    pct_97.5 = confint(result)[2,2],
+    r_square = summary(result)$r.squared,
+    n = length(residuals(result))
+  )
+}
+
+result_list_female <- mapply(one_lm_female, params[,1], params[,2], SIMPLIFY = FALSE)
+
+results_female <- do.call(rbind, result_list_female)
+results_female
+```
+```{r}
+df_female <- data.frame(matrix(unlist(results_female), nrow = 36, ncol = 10, byrow = F),stringsAsFactors=FALSE)
+str(df_female)
+names(df_female) <- c("bodyComp", "SNP","beta", "stdErr", "zvalue", "pvalue", "confint2.5", "confint97.5", "rsquare", "n")
+str(df_female)
+df_female$Sex <- 'Female'
+```
+
+Males
+```{r}
+one_lm_male <- function(j, k) {  
+  
+  form <- formula(paste0(j, "~ ", k, " + ", covariates_m))
+  result <- lm(form, data = male)
+  
+  list(
+    bodyComp = j,
+    SNP = k,
+    beta = coef(summary(result))[2,1],
+    std_err  = coef(summary(result))[2,2],
+    z_value  = coef(summary(result))[2,3],
+    p_value  = coef(summary(result))[2,4],
+    pct_2.5  = confint(result)[2,1],
+    pct_97.5 = confint(result)[2,2],
+    r_square = summary(result)$r.squared,
+    n = length(residuals(result))
+    
+  )
+}
+
+result_list_male <- mapply(one_lm_male, params[,1], params[,2], SIMPLIFY = FALSE)
+
+results_male <- do.call(rbind, result_list_male)
+results_male
+```
+```{r}
+df_male <- data.frame(matrix(unlist(results_male), nrow = 36, ncol = 10, byrow = F),stringsAsFactors=FALSE)
+str(df_male)
+names(df_male) <- c("bodyComp", "SNP","beta", "stdErr", "zvalue", "pvalue", "confint2.5", "confint97.5", "rsquare", "n")
+str(df_male)
+df_male$Sex <- 'Male'
+```
+```{r}
+#Run regression with alcohol as covariate to identify if signfiicant confounder, largest effect in GRB14 and men
+
+
+
+```
+Combine male and female results, WHR increasing allele, name changes, save
+```{r}
+setwd('/rsgrps/yann/michellenewell/UKB/Other/Fat_4SNPs_Regression_20191004/results')
+full_results <- rbind(df_female, df_male)
+```
+```{r}
+rm(df_female)
+rm(df_male)
+```
+
+
+If full_results from list, Rename .y SNPs, split rs number from allele, set WHR increasing allele and change outcomes accordingly
+```{r}
+#convert numers into numeric
+full_results$beta <- as.numeric(full_results$beta)
+full_results$stdErr <- as.numeric(full_results$stdErr)
+full_results$zvalue <- as.numeric(full_results$zvalue)
+full_results$pvalue <- as.numeric(full_results$pvalue)
+full_results$confint2.5 <- as.numeric(full_results$confint2.5)
+full_results$confint97.5 <- as.numeric(full_results$confint97.5)
+full_results$bodyComp <- as.character(full_results$bodyComp)
+full_results$SNP <- as.character(full_results$SNP)
+full_results$Sex <- as.character(full_results$Sex)
+full_results$rsquare <- as.numeric(full_results$rsquare)
+full_results$n <- as.numeric(full_results$n)
+str(full_results)
+```
+```{r}
+#rename column bodyComps are outcome
+names(full_results)[names(full_results) == "bodyComp"] <- "outcome"
+```
+```{r}
+#rename some snps
+full_results$SNP <- ifelse((full_results$SNP == 'rs13389219_T.y'), 'rs13389219_T', full_results$SNP)
+full_results$SNP <- ifelse((full_results$SNP == 'snp7_130438531_C'), 'chr7_130438531_CT', full_results$SNP)
+full_results$SNP <- ifelse((full_results$SNP == 'rs998584_A.y'), 'rs998584_A', full_results$SNP)
+
+```
+Adjust for WHR increasing allele
+```{r}
+
+#_____________label with closest gene___________
+full_results$Gene <- NA
+full_results$Gene[full_results$SNP == "rs13389219_T"] <- "GRB14-COBBL1"
+full_results$Gene[full_results$SNP == "rs8126001_T"] <- "RGS19/OPRL1"
+full_results$Gene[full_results$SNP == "chr7_130438531_CT"] <- "KLF14"
+full_results$Gene[full_results$SNP == "rs998584_A"] <- "VEGFA"
+```
+```{r}
+#WHR increasing alleles
+#beta
+full_results$beta_WHRinc <- NA
+full_results$beta_WHRinc[full_results$SNP == "rs13389219_T"] <- (full_results$beta[full_results$SNP == "rs13389219_T"]*(-1))
+full_results$beta_WHRinc[full_results$SNP == "rs8126001_T"] <- (full_results$beta[full_results$SNP == "rs8126001_T"]*(-1))
+full_results$beta_WHRinc[full_results$SNP == "chr7_130438531_CT"] <- full_results$beta[full_results$SNP == "chr7_130438531_CT"]
+full_results$beta_WHRinc[full_results$SNP == "rs998584_A"] <- full_results$beta[full_results$SNP == "rs998584_A"]
+
+#ciHigh
+full_results$ciHigh_WHRinc <- NA
+full_results$ciHigh_WHRinc[full_results$SNP == "rs13389219_T"] <- (full_results$confint97.5[full_results$SNP == "rs13389219_T"]*(-1))
+full_results$ciHigh_WHRinc[full_results$SNP == "rs8126001_T"] <- (full_results$confint97.5[full_results$SNP == "rs8126001_T"]*(-1))
+full_results$ciHigh_WHRinc[full_results$SNP == "chr7_130438531_CT"] <- full_results$confint97.5[full_results$SNP == "chr7_130438531_CT"]
+full_results$ciHigh_WHRinc[full_results$SNP == "rs998584_A"] <- full_results$confint97.5[full_results$SNP == "rs998584_A"]
+
+#ciLow
+full_results$ciLow_WHRinc <- NA
+full_results$ciLow_WHRinc[full_results$SNP == "rs13389219_T"] <- (full_results$confint2.5[full_results$SNP == "rs13389219_T"]*(-1))
+full_results$ciLow_WHRinc[full_results$SNP == "rs8126001_T"] <- (full_results$confint2.5[full_results$SNP == "rs8126001_T"]*(-1))
+full_results$ciLow_WHRinc[full_results$SNP == "chr7_130438531_CT"] <- full_results$confint2.5[full_results$SNP == "chr7_130438531_CT"]
+full_results$ciLow_WHRinc[full_results$SNP == "rs998584_A"] <- full_results$confint2.5[full_results$SNP == "rs998584_A"]
+
+
+
+```
+Save final data
+```{r}
+setwd('/rsgrps/yann/michellenewell/UKB/Other/Fat_4SNPs_Regression_20191004/results')
+#write.csv(full_results, "20200316_FinalRegResults_4snpsWTraits_WhitesOnly.csv", row.names = F, quote = F)
+write.csv(full_results, "20200617_FinalRegResults_4snpsWTraits_WhitesOnly_AlcoholVariation.csv", row.names = F, quote = F)
+```
+
+
+Let's make some plots!
+
+CRP for male and female only, no combined
+```{r}
+#________________order body comps________________________
+full_results$outcome <- factor(full_results$outcome, 
+                               levels = c("InvNorm_CRP", "InvNorm_ALT_MultExcl", "InvNorm_ALT_ExclDrinkWk", "InvNorm_ALT_NoAlc", "InvNorm_LegFatPerc", "InvNorm_BodyFatPerc",
+                                          "InvNorm_HC", "InvNorm_WC", "InvNorm_BMI"))
+full_results$Gene <- factor(full_results$Gene, levels = c("VEGFA", "GRB14-COBBL1", "KLF14", "RGS19/OPRL1"))
+
+full_results$Sex <- factor(full_results$Sex, levels = c("Female", "Male"))
+```
+
+```{r}
+setwd('/rsgrps/yann/michellenewell/UKB/Other/Fat_4SNPs_Regression_20191004/figures')
+library(RColorBrewer)
+
+#_____________test new plot by Gene___________
+ggplot(data=full_results, aes(x=outcome, y=beta_WHRinc, color=Sex)) +
+  geom_point() +
+  ylab("Beta and 95% CI") + xlab(NULL) +
+  facet_grid(Gene ~ .) +
+  scale_x_discrete(labels = c("InvNorm_CRP" = "CRP", "InvNorm_ALT_MultExcl" = "ALT, Alcohol Units", "InvNorm_ALT_ExclDrinkWk" = "ALT, Drinks per week", "InvNorm_ALT_NoAlc" = "ALT", "InvNorm_LegFatPerc" = "Leg Fat %", "InvNorm_BodyFatPerc" = "Body Fat %",
+                              "InvNorm_BMI" = "BMI", "InvNorm_HC" = "Hip Circumference", "InvNorm_WC" =  "Waist Circumference")) +
+  scale_colour_brewer(palette = "Dark2") +
+  theme_bw()+
+  geom_errorbar(aes(ymin=ciLow_WHRinc, ymax=ciHigh_WHRinc), size = 1, width=0.3, alpha = 0.6, show.legend=FALSE)+
+  geom_hline(yintercept=0, lty = 'dashed', size = 0.4) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())+
+  coord_flip() +
+  theme(strip.text = element_text(face = "italic"))
+#ggsave("20200316_Updated4SNPsCardioTraits_BodyCompBySNP_CRPbySexOnly_WHRinc_WhitesOnly.png", width=6, height=8, dpi=300)
+ggsave("2020617_Updated4SNPsCardioTraits_BodyCompBySNP_CRPbySexOnly_WHRinc_WhitesOnly_AlcoholVariations.png", width=6, height=8, dpi=300)
+```
+```{r}
+setwd('/rsgrps/yann/michellenewell/UKB/Other/Fat_4SNPs_Regression_20191004/figures')
+library(RColorBrewer)
+
+#_____________test new plot by Gene___________
+ggplot(data=full_results %>% filter(outcome  %in% c("InvNorm_ALT_MultExcl", "InvNorm_ALT_ExclDrinkWk", "InvNorm_ALT_NoAlc"))
+         , aes(x=outcome, y=beta_WHRinc, color=Sex)) +
+  geom_point() +
+  ylab("Beta and 95% CI") + xlab(NULL) +
+  facet_grid(Gene ~ .) +
+  scale_x_discrete(labels = c("InvNorm_ALT_MultExcl" = "ALT, Alcohol Units", "InvNorm_ALT_ExclDrinkWk" = "ALT, Drinks per week", "InvNorm_ALT_NoAlc" = "ALT, No Alcohol Exclusions")) +
+  scale_colour_brewer(palette = "Dark2") +
+  theme_bw()+
+  geom_errorbar(aes(ymin=ciLow_WHRinc, ymax=ciHigh_WHRinc), size = 1, width=0.3, alpha = 0.6, show.legend=FALSE)+
+  geom_hline(yintercept=0, lty = 'dashed', size = 0.4) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())+
+  coord_flip() +
+  theme(strip.text = element_text(face = "italic"))
+#ggsave("20200316_Updated4SNPsCardioTraits_BodyCompBySNP_CRPbySexOnly_WHRinc_WhitesOnly.png", width=6, height=8, dpi=300)
+ggsave("2020617_Updated4SNPsCardioTraits_BodyCompBySNP_CRPbySexOnly_WHRinc_WhitesOnly_AlcoholOnly.png", width=6, height=8, dpi=300)
+```
+```
+
+
+
